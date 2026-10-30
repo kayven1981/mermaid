@@ -242,6 +242,10 @@ export class FlowDB implements DiagramDB {
         vertex.type = doc?.shape;
       }
 
+      if (doc?.phantom === true) {
+        vertex.phantom = true;
+      }
+
       if (doc?.label) {
         vertex.text = doc?.label;
         vertex.labelType = this.sanitizeNodeLabelType(doc?.labelType);
@@ -1075,6 +1079,7 @@ You have to call mermaid.initialize.`
         assetWidth: vertex.assetWidth,
         assetHeight: vertex.assetHeight,
         constraint: vertex.constraint,
+        phantom: vertex.phantom,
       };
       if (isGroup) {
         nodes.push({
@@ -1329,6 +1334,7 @@ You have to call mermaid.initialize.`
         animate: rawEdge.animate,
         animation: rawEdge.animation,
         curve: rawEdge.interpolate || this.edges.defaultInterpolate || config.flowchart?.curve,
+        curveExplicit: Boolean(rawEdge.interpolate || this.edges.defaultInterpolate),
       };
 
       edges.push(edge);

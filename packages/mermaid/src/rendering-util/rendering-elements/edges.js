@@ -621,6 +621,67 @@ const generateDashArray = (len, oValueS, oValueE) => {
   return dashArray;
 };
 
+const isInvisibleGateway = (node) => !!node && node.width === 0 && node.height === 0;
+
+const snapStartToNodeCenter = (points, node) => {
+  if (!points.length || !node) return;
+  const target = points[points.length - 1];
+
+  // First-run orientation tells us the rank axis of the diagram:
+  //   vertical start -> TD: horizontal bus at the gateway's y
+  //   horizontal start -> LR: vertical bus at the gateway's x
+  let i = 1;
+  while (
+    i < points.length &&
+    (Math.abs(points[i].x - points[0].x) < 0.5 || Math.abs(points[i].y - points[0].y) < 0.5)
+  ) {
+    i++;
+  }
+  const vertical = i > 1 && Math.abs(points[i - 1].x - points[0].x) < 0.5;
+  const bend = vertical
+    ? { x: target.x, y: node.y }
+    : { x: node.x, y: target.y };
+
+  // Collapse ELK's ladder to one clean L through the shared bus. All outgoing
+  // edges therefore leave the gateway on the same bus line, so their parallel
+  // runs overlap instead of crossing each other (which used to trigger line
+  // jumps / visible hooks).
+  if (points.length > 2) {
+    points.splice(1, points.length - 2, bend);
+  } else {
+    points.splice(1, 0, bend);
+  }
+  points[0] = { x: node.x, y: node.y };
+};
+
+const snapEndToNodeCenter = (points, node) => {
+  if (!points.length || !node) return;
+  const last = points[points.length - 1];
+  const source = points[0];
+
+  // Final-run orientation mirrors snapStart: vertical finish -> TD, horizontal
+  // finish -> LR. Route through the shared bus at the gateway coordinate.
+  let i = points.length - 2;
+  while (
+    i >= 0 &&
+    (Math.abs(points[i].x - last.x) < 0.5 || Math.abs(points[i].y - last.y) < 0.5)
+  ) {
+    i--;
+  }
+  const start = i + 1;
+  const vertical = start < points.length - 1 && Math.abs(points[start].x - last.x) < 0.5;
+  const bend = vertical
+    ? { x: source.x, y: node.y }
+    : { x: node.x, y: source.y };
+
+  if (points.length > 2) {
+    points.splice(1, points.length - 2, bend);
+  } else {
+    points.splice(1, 0, bend);
+  }
+  points[points.length - 1] = { x: node.x, y: node.y };
+};
+
 export const insertEdge = function (
   elem,
   edge,
@@ -702,6 +763,12 @@ export const insertEdge = function (
     points.unshift(tail.intersect(points[0]));
     points.push(head.intersect(points[points.length - 1]));
   }
+  // AUSPEX: invisible gateways have a 0x0 layout box; force the edge endpoints
+  // (and the first/last straight run) onto the node center so the T-junction is
+  // clean instead of a port-offset hook.
+  if (isInvisibleGateway(tail)) snapStartToNodeCenter(points, tail);
+  if (isInvisibleGateway(head)) snapEndToNodeCenter(points, head);
+
   const pointsStr = btoa(JSON.stringify(points));
   if (edge.toCluster) {
     log.info('to cluster abc88', clusterDb.get(edge.toCluster));
@@ -726,7 +793,7 @@ export const insertEdge = function (
   const edgeCurveType = resolveEdgeCurveType(edge.curve);
   // Apply fixCorners for non-rounded curves to pre-round right-angle corners
   // (rounded curve type uses generateRoundedPath instead)
-  if (edgeCurveType !== 'rounded') {
+  if (!['rounded', 'stepAfter', 'step', 'stepBefore'].includes(edgeCurveType)) {
     lineData = fixCorners(lineData);
   }
   let curve = curveLinear;

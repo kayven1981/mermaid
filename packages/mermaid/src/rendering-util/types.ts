@@ -45,6 +45,8 @@ interface BaseNode {
   width?: number;
   height?: number;
   wrappingWidth?: number;
+  /** Layout-only node: 0x0, not painted (used for invisible fork/join gateways). */
+  phantom?: boolean;
   /** Minimum width of the label area; short labels are widened to it (see `minNodeWidth`). */
   minWidth?: number;
   /**
@@ -181,6 +183,10 @@ export interface Edge {
   terminalLabelCenters?: Partial<Record<TerminalLabelKey, Point>>;
   // Rendering specific properties
   curve?: string;
+  /** Curve name before ELK converts it to a d3 curve function (used to restore it for insertEdge). */
+  curveName?: string;
+  /** True when this edge's curve came from edge metadata / linkStyle, not the diagram default. */
+  curveExplicit?: boolean;
   labelpos?: string;
   labelStyle?: string[];
   minlen?: number;

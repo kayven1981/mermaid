@@ -8,6 +8,8 @@ export interface NodeMetaData {
   w?: string;
   h?: string;
   constraint?: 'on' | 'off';
+  /** Layout-only node: 0x0, not painted. */
+  phantom?: boolean;
   priority: 'Very High' | 'High' | 'Medium' | 'Low' | 'Very Low';
   assigned?: string;
   ticket?: string;

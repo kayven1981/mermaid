@@ -1,0 +1,286 @@
+diff --git a/packages/mermaid/src/config.ts b/packages/mermaid/src/config.ts
+index d45a206..edb2018 100644
+--- a/packages/mermaid/src/config.ts
++++ b/packages/mermaid/src/config.ts
+@@ -199,6 +199,16 @@ export const getSiteConfig = (): MermaidConfig => {
+   return assignWithDepth({}, siteConfig);
+ };
+ 
++/**
++ * Whether `flowchart.curve` was explicitly configured by the user (through
++ * `initialize()`, frontmatter, or an `%%{init}%%` directive) instead of coming
++ * from the schema default. Layout engines that paint their own default curve
++ * must not treat the schema default as a user preference.
++ */
++export const hasExplicitFlowchartCurve = (): boolean =>
++  siteConfigDelta.flowchart?.curve !== undefined ||
++  directives.some((directive) => directive.flowchart?.curve !== undefined);
++
+ /**
+  * Updates the `currentConfig` with the provided `conf` after sanitization.
+  *
+diff --git a/packages/mermaid/src/diagrams/flowchart/flowDb.ts b/packages/mermaid/src/diagrams/flowchart/flowDb.ts
+index 3b2cd01..4e5f97d 100644
+--- a/packages/mermaid/src/diagrams/flowchart/flowDb.ts
++++ b/packages/mermaid/src/diagrams/flowchart/flowDb.ts
+@@ -242,6 +242,10 @@ export class FlowDB implements DiagramDB {
+         vertex.type = doc?.shape;
+       }
+ 
++      if (doc?.phantom === true) {
++        vertex.phantom = true;
++      }
++
+       if (doc?.label) {
+         vertex.text = doc?.label;
+         vertex.labelType = this.sanitizeNodeLabelType(doc?.labelType);
+@@ -1075,6 +1079,7 @@ You have to call mermaid.initialize.`
+         assetWidth: vertex.assetWidth,
+         assetHeight: vertex.assetHeight,
+         constraint: vertex.constraint,
++        phantom: vertex.phantom,
+       };
+       if (isGroup) {
+         nodes.push({
+@@ -1329,6 +1334,7 @@ You have to call mermaid.initialize.`
+         animate: rawEdge.animate,
+         animation: rawEdge.animation,
+         curve: rawEdge.interpolate || this.edges.defaultInterpolate || config.flowchart?.curve,
++        curveExplicit: Boolean(rawEdge.interpolate || this.edges.defaultInterpolate),
+       };
+ 
+       edges.push(edge);
+diff --git a/packages/mermaid/src/diagrams/flowchart/types.ts b/packages/mermaid/src/diagrams/flowchart/types.ts
+index 89d4e65..3b6b524 100644
+--- a/packages/mermaid/src/diagrams/flowchart/types.ts
++++ b/packages/mermaid/src/diagrams/flowchart/types.ts
+@@ -46,6 +46,8 @@ export interface FlowVertex {
+   defaultWidth?: number;
+   imageAspectRatio?: number;
+   constraint?: 'on' | 'off';
++  /** Layout-only node: 0x0, not painted (used for invisible fork/join gateways). */
++  phantom?: boolean;
+ }
+ 
+ export interface FlowText {
+diff --git a/packages/mermaid/src/rendering-util/layout-algorithms/elk/render.ts b/packages/mermaid/src/rendering-util/layout-algorithms/elk/render.ts
+index 51d2996..df2ddcb 100644
+--- a/packages/mermaid/src/rendering-util/layout-algorithms/elk/render.ts
++++ b/packages/mermaid/src/rendering-util/layout-algorithms/elk/render.ts
+@@ -5,6 +5,7 @@ import {
+ } from '../common/index.js';
+ import type { LayoutData, TerminalLabelKey } from '../../types.js';
+ import { setConfig } from '../../../diagram-api/diagramAPI.js';
++import { hasExplicitFlowchartCurve } from '../../../config.js';
+ // @ts-ignore TODO: Investigate D3 issue
+ import { curveLinear } from 'd3';
+ import ELK from 'elkjs/lib/elk.bundled.js';
+@@ -2089,7 +2090,18 @@ function applyElkEdgeLayout(
+       getStartMarkerPathOffset(layoutEdge),
+       log
+     );
+-    layoutEdge.curve = 'rounded';
++    // AUSPEX: ELK routes orthogonal polylines and used to hard-code `rounded`
++    // here, silently discarding an explicit `flowchart.curve` (e.g. stepAfter)
++    // from frontmatter/init. Keep `rounded` as ELK's default, but honour any
++    // curve the user actually asked for.
++    const requestedCurve =
++      layoutEdge.curveName ??
++      (typeof layoutEdge.curve === 'string' ? layoutEdge.curve : undefined);
++    layoutEdge.curve =
++      requestedCurve &&
++      (requestedCurve !== 'basis' || layoutEdge.curveExplicit || hasExplicitFlowchartCurve())
++        ? requestedCurve
++        : 'rounded';
+ 
+     const label = edge.labels?.[0];
+     if (label) {
+@@ -2756,12 +2768,16 @@ function buildEdgeData(
+   edgeData.labelStyle = edge.labelStyle ?? strokeRes.labelStyle;
+   edgeData.classes = buildFallbackEdgeClasses(edge);
+ 
+-  edgeData.curve = elkContext.interpolateToCurve(
+-    getCurve(edge.curve ?? edge.interpolate, defaults.defaultInterpolate, defaults.confCurve) as
+-      | string
+-      | undefined,
+-    curveLinear
+-  );
++  // Keep the curve *name* alongside the d3 curve function. `insertEdge` resolves
++  // names itself and line-jump hints compare against strings, so the layout step
++  // must be able to restore the name after ELK has used the function form.
++  const curveName = getCurve(
++    edge.curve ?? edge.interpolate,
++    defaults.defaultInterpolate,
++    defaults.confCurve
++  ) as string | undefined;
++  edgeData.curveName = curveName;
++  edgeData.curve = elkContext.interpolateToCurve(curveName, curveLinear);
+ 
+   const hasText = (edgeData.text ?? '') !== '';
+   if (edge.arrowheadStyle !== undefined) {
+diff --git a/packages/mermaid/src/rendering-util/rendering-elements/edges.js b/packages/mermaid/src/rendering-util/rendering-elements/edges.js
+index 1f88ca4..2d42124 100644
+--- a/packages/mermaid/src/rendering-util/rendering-elements/edges.js
++++ b/packages/mermaid/src/rendering-util/rendering-elements/edges.js
+@@ -621,6 +621,67 @@ const generateDashArray = (len, oValueS, oValueE) => {
+   return dashArray;
+ };
+ 
++const isInvisibleGateway = (node) => !!node && node.width === 0 && node.height === 0;
++
++const snapStartToNodeCenter = (points, node) => {
++  if (!points.length || !node) return;
++  const target = points[points.length - 1];
++
++  // First-run orientation tells us the rank axis of the diagram:
++  //   vertical start -> TD: horizontal bus at the gateway's y
++  //   horizontal start -> LR: vertical bus at the gateway's x
++  let i = 1;
++  while (
++    i < points.length &&
++    (Math.abs(points[i].x - points[0].x) < 0.5 || Math.abs(points[i].y - points[0].y) < 0.5)
++  ) {
++    i++;
++  }
++  const vertical = i > 1 && Math.abs(points[i - 1].x - points[0].x) < 0.5;
++  const bend = vertical
++    ? { x: target.x, y: node.y }
++    : { x: node.x, y: target.y };
++
++  // Collapse ELK's ladder to one clean L through the shared bus. All outgoing
++  // edges therefore leave the gateway on the same bus line, so their parallel
++  // runs overlap instead of crossing each other (which used to trigger line
++  // jumps / visible hooks).
++  if (points.length > 2) {
++    points.splice(1, points.length - 2, bend);
++  } else {
++    points.splice(1, 0, bend);
++  }
++  points[0] = { x: node.x, y: node.y };
++};
++
++const snapEndToNodeCenter = (points, node) => {
++  if (!points.length || !node) return;
++  const last = points[points.length - 1];
++  const source = points[0];
++
++  // Final-run orientation mirrors snapStart: vertical finish -> TD, horizontal
++  // finish -> LR. Route through the shared bus at the gateway coordinate.
++  let i = points.length - 2;
++  while (
++    i >= 0 &&
++    (Math.abs(points[i].x - last.x) < 0.5 || Math.abs(points[i].y - last.y) < 0.5)
++  ) {
++    i--;
++  }
++  const start = i + 1;
++  const vertical = start < points.length - 1 && Math.abs(points[start].x - last.x) < 0.5;
++  const bend = vertical
++    ? { x: source.x, y: node.y }
++    : { x: node.x, y: source.y };
++
++  if (points.length > 2) {
++    points.splice(1, points.length - 2, bend);
++  } else {
++    points.splice(1, 0, bend);
++  }
++  points[points.length - 1] = { x: node.x, y: node.y };
++};
++
+ export const insertEdge = function (
+   elem,
+   edge,
+@@ -702,6 +763,12 @@ export const insertEdge = function (
+     points.unshift(tail.intersect(points[0]));
+     points.push(head.intersect(points[points.length - 1]));
+   }
++  // AUSPEX: invisible gateways have a 0x0 layout box; force the edge endpoints
++  // (and the first/last straight run) onto the node center so the T-junction is
++  // clean instead of a port-offset hook.
++  if (isInvisibleGateway(tail)) snapStartToNodeCenter(points, tail);
++  if (isInvisibleGateway(head)) snapEndToNodeCenter(points, head);
++
+   const pointsStr = btoa(JSON.stringify(points));
+   if (edge.toCluster) {
+     log.info('to cluster abc88', clusterDb.get(edge.toCluster));
+@@ -726,7 +793,7 @@ export const insertEdge = function (
+   const edgeCurveType = resolveEdgeCurveType(edge.curve);
+   // Apply fixCorners for non-rounded curves to pre-round right-angle corners
+   // (rounded curve type uses generateRoundedPath instead)
+-  if (edgeCurveType !== 'rounded') {
++  if (!['rounded', 'stepAfter', 'step', 'stepBefore'].includes(edgeCurveType)) {
+     lineData = fixCorners(lineData);
+   }
+   let curve = curveLinear;
+diff --git a/packages/mermaid/src/rendering-util/rendering-elements/nodes.ts b/packages/mermaid/src/rendering-util/rendering-elements/nodes.ts
+index 414e061..760d1f2 100644
+--- a/packages/mermaid/src/rendering-util/rendering-elements/nodes.ts
++++ b/packages/mermaid/src/rendering-util/rendering-elements/nodes.ts
+@@ -1,5 +1,6 @@
+ import { log } from '../../logger.js';
+ import { shapes } from './shapes.js';
++import { getNodeClasses } from './shapes/util.js';
+ import type { Node, NonClusterNode, ShapeRenderOptions } from '../types.js';
+ import type { SVGGroup } from '../../mermaid.js';
+ import type { D3Selection } from '../../types.js';
+@@ -16,6 +17,23 @@ export async function insertNode(
+   node: NonClusterNode,
+   renderOptions: ShapeRenderOptions
+ ) {
++  if (node.phantom) {
++    // Layout-only node: keep it in the graph so edges can split/merge here,
++    // but give it a 0x0 box and no visual body. Used by invisible fork/join
++    // gateways (`F1@{ shape: fork, phantom: true }`).
++    node.label = '';
++    node.width = 0;
++    node.height = 0;
++    node.intersect = () => ({ x: node.x, y: node.y });
++    const shapeSvg = elem
++      .insert('g')
++      .attr('class', getNodeClasses(node))
++      .attr('id', node.domId ?? node.id);
++    shapeSvg.attr('data-look', handleUndefinedAttr(node.look));
++    nodeElems.set(node.id, shapeSvg);
++    return shapeSvg;
++  }
++
+   let newEl: NodeElement | undefined;
+   let el;
+ 
+diff --git a/packages/mermaid/src/rendering-util/types.ts b/packages/mermaid/src/rendering-util/types.ts
+index 8a385c3..dfb5cb4 100644
+--- a/packages/mermaid/src/rendering-util/types.ts
++++ b/packages/mermaid/src/rendering-util/types.ts
+@@ -45,6 +45,8 @@ interface BaseNode {
+   width?: number;
+   height?: number;
+   wrappingWidth?: number;
++  /** Layout-only node: 0x0, not painted (used for invisible fork/join gateways). */
++  phantom?: boolean;
+   /** Minimum width of the label area; short labels are widened to it (see `minNodeWidth`). */
+   minWidth?: number;
+   /**
+@@ -181,6 +183,10 @@ export interface Edge {
+   terminalLabelCenters?: Partial<Record<TerminalLabelKey, Point>>;
+   // Rendering specific properties
+   curve?: string;
++  /** Curve name before ELK converts it to a d3 curve function (used to restore it for insertEdge). */
++  curveName?: string;
++  /** True when this edge's curve came from edge metadata / linkStyle, not the diagram default. */
++  curveExplicit?: boolean;
+   labelpos?: string;
+   labelStyle?: string[];
+   minlen?: number;
+diff --git a/packages/mermaid/src/types.ts b/packages/mermaid/src/types.ts
+index 4650c11..d7b4f00 100644
+--- a/packages/mermaid/src/types.ts
++++ b/packages/mermaid/src/types.ts
+@@ -8,6 +8,8 @@ export interface NodeMetaData {
+   w?: string;
+   h?: string;
+   constraint?: 'on' | 'off';
++  /** Layout-only node: 0x0, not painted. */
++  phantom?: boolean;
+   priority: 'Very High' | 'High' | 'Medium' | 'Low' | 'Very Low';
+   assigned?: string;
+   ticket?: string;

@@ -46,6 +46,8 @@ export interface FlowVertex {
   defaultWidth?: number;
   imageAspectRatio?: number;
   constraint?: 'on' | 'off';
+  /** Layout-only node: 0x0, not painted (used for invisible fork/join gateways). */
+  phantom?: boolean;
 }
 
 export interface FlowText {

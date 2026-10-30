@@ -1,5 +1,6 @@
 import { log } from '../../logger.js';
 import { shapes } from './shapes.js';
+import { getNodeClasses } from './shapes/util.js';
 import type { Node, NonClusterNode, ShapeRenderOptions } from '../types.js';
 import type { SVGGroup } from '../../mermaid.js';
 import type { D3Selection } from '../../types.js';
@@ -16,6 +17,23 @@ export async function insertNode(
   node: NonClusterNode,
   renderOptions: ShapeRenderOptions
 ) {
+  if (node.phantom) {
+    // Layout-only node: keep it in the graph so edges can split/merge here,
+    // but give it a 0x0 box and no visual body. Used by invisible fork/join
+    // gateways (`F1@{ shape: fork, phantom: true }`).
+    node.label = '';
+    node.width = 0;
+    node.height = 0;
+    node.intersect = () => ({ x: node.x, y: node.y });
+    const shapeSvg = elem
+      .insert('g')
+      .attr('class', getNodeClasses(node))
+      .attr('id', node.domId ?? node.id);
+    shapeSvg.attr('data-look', handleUndefinedAttr(node.look));
+    nodeElems.set(node.id, shapeSvg);
+    return shapeSvg;
+  }
+
   let newEl: NodeElement | undefined;
   let el;
 

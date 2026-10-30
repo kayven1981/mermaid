@@ -200,6 +200,16 @@ export const getSiteConfig = (): MermaidConfig => {
 };
 
 /**
+ * Whether `flowchart.curve` was explicitly configured by the user (through
+ * `initialize()`, frontmatter, or an `%%{init}%%` directive) instead of coming
+ * from the schema default. Layout engines that paint their own default curve
+ * must not treat the schema default as a user preference.
+ */
+export const hasExplicitFlowchartCurve = (): boolean =>
+  siteConfigDelta.flowchart?.curve !== undefined ||
+  directives.some((directive) => directive.flowchart?.curve !== undefined);
+
+/**
  * Updates the `currentConfig` with the provided `conf` after sanitization.
  *
  * @deprecated Any changes to the `currentConfig` would be overwritten by the

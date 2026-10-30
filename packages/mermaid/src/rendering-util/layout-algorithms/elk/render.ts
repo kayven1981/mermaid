@@ -5,6 +5,7 @@ import {
 } from '../common/index.js';
 import type { LayoutData, TerminalLabelKey } from '../../types.js';
 import { setConfig } from '../../../diagram-api/diagramAPI.js';
+import { hasExplicitFlowchartCurve } from '../../../config.js';
 // @ts-ignore TODO: Investigate D3 issue
 import { curveLinear } from 'd3';
 import ELK from 'elkjs/lib/elk.bundled.js';
@@ -2089,7 +2090,18 @@ function applyElkEdgeLayout(
       getStartMarkerPathOffset(layoutEdge),
       log
     );
-    layoutEdge.curve = 'rounded';
+    // AUSPEX: ELK routes orthogonal polylines and used to hard-code `rounded`
+    // here, silently discarding an explicit `flowchart.curve` (e.g. stepAfter)
+    // from frontmatter/init. Keep `rounded` as ELK's default, but honour any
+    // curve the user actually asked for.
+    const requestedCurve =
+      layoutEdge.curveName ??
+      (typeof layoutEdge.curve === 'string' ? layoutEdge.curve : undefined);
+    layoutEdge.curve =
+      requestedCurve &&
+      (requestedCurve !== 'basis' || layoutEdge.curveExplicit || hasExplicitFlowchartCurve())
+        ? requestedCurve
+        : 'rounded';
 
     const label = edge.labels?.[0];
     if (label) {
@@ -2756,12 +2768,16 @@ function buildEdgeData(
   edgeData.labelStyle = edge.labelStyle ?? strokeRes.labelStyle;
   edgeData.classes = buildFallbackEdgeClasses(edge);
 
-  edgeData.curve = elkContext.interpolateToCurve(
-    getCurve(edge.curve ?? edge.interpolate, defaults.defaultInterpolate, defaults.confCurve) as
-      | string
-      | undefined,
-    curveLinear
-  );
+  // Keep the curve *name* alongside the d3 curve function. `insertEdge` resolves
+  // names itself and line-jump hints compare against strings, so the layout step
+  // must be able to restore the name after ELK has used the function form.
+  const curveName = getCurve(
+    edge.curve ?? edge.interpolate,
+    defaults.defaultInterpolate,
+    defaults.confCurve
+  ) as string | undefined;
+  edgeData.curveName = curveName;
+  edgeData.curve = elkContext.interpolateToCurve(curveName, curveLinear);
 
   const hasText = (edgeData.text ?? '') !== '';
   if (edge.arrowheadStyle !== undefined) {
